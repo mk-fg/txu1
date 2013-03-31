@@ -17,6 +17,12 @@ or modules.
 Usage Example
 ----------------------------------------
 
+Note that email/password credentials are only needed to get the OAuth 1.0 token
+(which can be revoked through [ubuntu single sign on
+interface](https://login.ubuntu.com/+applications)) once, see
+[docs](https://one.ubuntu.com/developer/account_admin/auth/otherplatforms) for
+more details.
+
 More comprehensive docs are always welcome!
 
 	from twisted.internet import defer, reactor

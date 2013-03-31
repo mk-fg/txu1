@@ -18,7 +18,7 @@ setup(
 	author_email = 'mk.fraggod@gmail.com',
 	license = 'WTFPL',
 	keywords = [
-		'ubuntu one', 'u1', 'ubuntu', 'one', 'twisted'
+		'ubuntu one', 'u1', 'ubuntu', 'one', 'twisted', 'sso',
 		'async', 'api', 'rest', 'json', 'storage', 'storage provider', 'file hosting' ],
 	url = 'https://github.com/mk-fg/txu1',
 
