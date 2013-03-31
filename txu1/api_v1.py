@@ -6,7 +6,6 @@ from mimetypes import guess_type
 from time import time
 from collections import Mapping, OrderedDict
 from datetime import datetime, timedelta
-from os.path import join, basename
 import os, sys, io, re, types, weakref, logging
 import urllib, urlparse, json
 
@@ -71,12 +70,12 @@ def force_bytes(bytes_or_unicode, encoding='utf-8', errors='backslashreplace'):
 
 class U1InteractionError(Exception): pass
 
-class APILimitationError(U1InteractionError): pass
-
 class ProtocolError(U1InteractionError):
 	def __init__(self, code, msg):
 		super(ProtocolError, self).__init__(code, msg)
 		self.code = code
+
+class DoesNotExist(U1InteractionError): pass
 
 class AuthenticationError(U1InteractionError): pass
 
@@ -96,8 +95,9 @@ class UnderlyingProtocolError(ProtocolError):
 
 class DataReceiver(protocol.Protocol):
 
-	def __init__(self, done, timer=None):
+	def __init__(self, done, timer=None, allow_loss=False):
 		self.done, self.timer, self.data = done, timer, list()
+		self.allow_loss = allow_loss
 
 	def dataReceived(self, chunk):
 		if self.timer:
@@ -111,7 +111,8 @@ class DataReceiver(protocol.Protocol):
 
 	def connectionLost(self, reason):
 		if self.timer: self.timer.state_next()
-		if not isinstance(reason.value, ResponseDone): # some error
+		if not isinstance(reason.value, ResponseDone)\
+				and not (self.allow_loss and isinstance(reason.value, http.PotentialDataLoss)):
 			self.done.callback(reason)
 		elif not self.done.called: # might errback due to timer
 			self.done.callback(
@@ -134,25 +135,21 @@ class FileBodyProducer(object):
 		try: src.seek, src.tell
 		except AttributeError: self.length = UNKNOWN_LENGTH
 		else:
-			pos = src.tell()
-			try:
-				src.seek(0, os.SEEK_END)
-				self.length = src.tell() - pos
-			finally: src.seek(pos)
+			src.seek(0, os.SEEK_END)
+			self.length = src.tell()
 
 	@defer.inlineCallbacks
 	def upload_file(self, src, dst):
-		try:
-			while True:
-				if self.timer:
-					try: self.timer.timeout_reset()
-					except self.timer.TooLate as err:
-						self.timer = None
-						break
-				chunk = src.read(self.chunk_size)
-				if not chunk: break
-				yield dst.write(chunk)
-		finally: src.close()
+		src.seek(0)
+		while True:
+			if self.timer:
+				try: self.timer.timeout_reset()
+				except self.timer.TooLate as err:
+					self.timer = None
+					break
+			chunk = src.read(self.chunk_size)
+			if not chunk: break
+			yield dst.write(chunk)
 
 	@defer.inlineCallbacks
 	def send(self, dst):
@@ -183,20 +180,19 @@ class MultipartDataSender(FileBodyProducer):
 
 	def __init__(self, fields, boundary, timer=None):
 		self.fields, self.boundary, self.timer = fields, boundary, timer
-
-		# "Transfer-Encoding: chunked" doesn't work with SkyDrive,
-		#  so calculate_length() must be called to replace it with some value
-		# TODO: test "chunked" with box - it's no skydrive
 		self.length = UNKNOWN_LENGTH
 
-	def calculate_length(self):
-		d = self.send()
-		d.addCallback(lambda length: setattr(self, 'length', length))
-		return d
+	@defer.inlineCallbacks
+	def calculate_length(self, dst=None):
+		if not dst: self.length = yield self.send()
+		else:
+			pos = dst.tell()
+			yield self.send(dst)
+			self.length = dst.tell() - pos
 
 	@defer.inlineCallbacks
 	def send(self, dst=None):
-		dry_run = not dst
+		dry_run = not dst # allows to calculate length without reading files
 		if dry_run: dst, dst_ext = io.BytesIO(), 0
 
 		for name, data in self.fields.viewitems():
@@ -217,7 +213,9 @@ class MultipartDataSender(FileBodyProducer):
 
 			if isinstance(data, types.StringTypes): dst.write(data)
 			elif not dry_run: yield self.upload_file(data, dst)
-			else: dst_ext += os.fstat(data.fileno()).st_size
+			else:
+				data.seek(0, os.SEEK_END)
+				dst_ext += data.tell()
 			dst.write(b'\r\n')
 
 		dst.write(b'--{}--\r\n'.format(self.boundary))
@@ -341,9 +339,22 @@ def _dump_trunc(v, trunc_len=100):
 	if len(v) > trunc_len: v = v[:trunc_len] + '...'
 	return v
 
+def join(*path_nodes):
+	path = ''
+	for node in path_nodes:
+		if not node: continue
+		if not path.endswith('/'): path += '/'
+		path += node.lstrip('/')
+	return path
+
 
 class txU1API(object):
 	'U1 API client.'
+
+	# api_url_content is a temporary caveat, described in API docs:
+	#  https://one.ubuntu.com/developer/files/store_files/cloud
+	api_url_meta = 'https://one.ubuntu.com/api/file_storage/v1'
+	api_url_content = 'https://files.one.ubuntu.com/api/file_storage/v1'
 
 	# Auth tunables
 	auth_url_login = 'https://login.ubuntu.com/api/1.0/authentications'
@@ -384,50 +395,64 @@ class txU1API(object):
 				debug_requests=self.debug_requests, **self.request_pool_options )
 		self.request_agent = ContentDecoderAgent(RedirectAgent(Agent(
 			reactor, TLSContextFactory(self.ca_certs_files), pool=pool )), [('gzip', GzipDecoder)])
+		self.oauth = dict() # oauth object cache
+		self.default_volume = None # auto-filled with root_node_path if left unset
 
 
 	@defer.inlineCallbacks
 	def request( self, url, method='get',
-			decode=None, encode=None, data=None, chunks=True,
-			headers=dict(), raise_for=dict(), queue_lines=None ):
+			decode=None, encode=None, data=None,
+			headers=None, raise_for=dict(), queue_lines=None ):
 		'''Make HTTP(S) request.
-			decode (response body) = None | json
-			encode (data) = None | json | form | files'''
+			headers can be either dict or callable(url, method, body, mimetype or None).
+			decode (response body) = None | json.
+			encode (data) = None | json | form | files.'''
 		if self.debug_requests:
 			url_debug = _dump_trunc(url)
 			log.debug('HTTP request: {} {} (h: {}, enc: {}, dec: {}, data: {!r})'.format(
 				method, url_debug, headers, encode, decode, _dump_trunc(data) ))
 
 		timeout = HTTPTimeout(**self.request_io_timeouts)
-		headers = dict() if not headers\
-			else dict(map(force_bytes, v) for v in headers.viewitems())
-		headers.setdefault('User-Agent', 'txU1')
+		req_headers = {'User-Agent': 'txU1'}
 
 		if data is not None:
 			if encode == 'files':
 				boundary = os.urandom(16).encode('hex')
-				headers.setdefault('Content-Type', 'multipart/form-data; boundary={}'.format(boundary))
+				req_headers['Content-Type'] = 'multipart/form-data; boundary={}'.format(boundary)
 				data = MultipartDataSender(data, boundary)
-				yield data.calculate_length()
+				if not callable(headers): yield data.calculate_length()
+				else:
+					body = io.BytesIO()
+					yield data.calculate_length(body)
+					headers = headers(url, method, body.getvalue(), 'multipart/form-data')
 			else:
 				if encode is None:
 					if isinstance(data, types.StringTypes): data = io.BytesIO(data)
 				elif encode == 'form':
-					headers.setdefault('Content-Type', 'application/x-www-form-urlencoded')
+					req_headers['Content-Type'] = 'application/x-www-form-urlencoded'
 					data = io.BytesIO(urlencode(data))
 				elif encode == 'json':
-					headers.setdefault('Content-Type', 'application/json')
+					req_headers['Content-Type'] = 'application/json'
 					data = io.BytesIO(json.dumps(data))
 				else: raise ValueError('Unknown request encoding: {}'.format(encode))
-				data = (ChunkingFileBodyProducer if chunks else FileBodyProducer)(data)
+				if callable(headers):
+					data.seek(0)
+					headers = headers(url, method, data.read(), req_headers.get('Content-Type'))
+				data = FileBodyProducer(data)
+		elif callable(headers): headers = headers(url, method, '', None)
 
+		# Passed "headers" should be allowed to be modified by body_hash()
+		for k, v in (headers or dict()).viewitems():
+			req_headers[force_bytes(k)] = force_bytes(v)
 		url, method = it.imap(force_bytes, [url, method.lower()])
-		if decode not in ['json', None]:
-			raise ValueError('Unknown request decoding method: {}'.format(decode))
+
+		if decode == 'json': req_headers.setdefault('Accept', 'application/json')
+		elif decode is not None:
+			raise ValueError('Unknown response decoding method: {}'.format(decode))
 
 		res_deferred = first_result( timeout,
 			self.request_agent.request( method.upper(), url,
-				Headers(dict((k,[v]) for k,v in (headers or dict()).viewitems())), data ) )
+				Headers(dict((k,[v]) for k,v in req_headers.viewitems())), data ) )
 		code = res_body = None
 		try:
 			res = yield res_deferred
@@ -436,7 +461,7 @@ class txU1API(object):
 			if code not in [http.OK, http.CREATED]:
 				if self.debug_requests:
 					res_body = defer.Deferred()
-					res.deliverBody(DataReceiver(res_body, timer=timeout))
+					res.deliverBody(DataReceiver(res_body, timer=timeout, allow_loss=True))
 					res_body = yield first_result(timeout, res_body)
 					log.debug('HTTP error response body: {!r}'.format(res_body))
 				raise ProtocolError(code, res.phrase)
@@ -474,6 +499,51 @@ class txU1API(object):
 		finally: timeout.state_finished()
 
 
+	def _auth_headers( self, url, method='get', body='', mime=None,
+			base=dict(), sign_method=oauth.SignatureMethod_HMAC_SHA1() ):
+		cache_key = tuple(self.auth_consumer) + tuple(self.auth_token)
+		try: c, t = self.oauth[cache_key]
+		except KeyError:
+			c, t = oauth.Consumer(*self.auth_consumer),\
+				oauth.Token(*self.auth_token)
+			self.oauth.clear()
+			self.oauth[cache_key] = c, t
+		req = oauth.Request.from_consumer_and_token(
+			c, token=t, body=body, http_url=url,
+			http_method=method.upper(),
+			is_form_encoded=(mime == 'application/x-www-form-urlencoded') )
+		req.sign_request(sign_method, c, t)
+		return dict(it.chain(base.viewitems(), req.to_header().viewitems()))
+
+	def _api_url(self, path, query=dict(), content=False, pass_empty_values=False):
+		query = query.copy()
+		if not pass_empty_values:
+			for k, v in query.viewitems():
+				if not v:
+					raise ValueError('Empty key {!r} for API call (path: {})'.format(k, path))
+		if path and not path.startswith('/'): path = '/' + path
+		if query: path += '?{}'.format(urllib.urlencode(query))
+		return (self.api_url_meta if not content else self.api_url_content) + path
+
+	def __call__( self, url='', query=dict(),
+			query_filter=True, content=False, method='get', **request_kwz ):
+		'''Make an arbitrary call to the API.
+			Shouldn't be used directly under most circumstances.'''
+		if query_filter:
+			query = dict( (k, v) for k, v in
+				query.viewitems() if v is not None )
+		api_url = self._api_url(url, query, content=content)
+		request_kwz.setdefault('decode', 'json')
+
+		def _auth_headers(url, method, body, mime, base):
+			url = url.split(' ', 1)[0] # XXX: no idea why API does that, bug?
+			return self._auth_headers(url, method, body, mime, base=base)
+		request_kwz['headers'] = ft.partial(
+			_auth_headers, base=request_kwz.get('headers', dict()) )
+
+		return self.request(api_url, method=method, **request_kwz)
+
+
 	@defer.inlineCallbacks
 	def auth_create_token(self, email, password):
 		# Using email/password, get OAuth consumer/token
@@ -486,15 +556,62 @@ class txU1API(object):
 		# Authorize token for Ubuntu One service
 		self.auth_consumer = res['consumer_key'], res['consumer_secret']
 		self.auth_token = res['token'], res['token_secret']
-		req_consumer = oauth.Consumer(*self.auth_consumer)
-		req_token = oauth.Token(*self.auth_token)
-		req = oauth.Request.from_consumer_and_token(
-			req_consumer, token=req_token, http_url=self.auth_url_token )
-		req.sign_request(oauth.SignatureMethod_PLAINTEXT(), req_consumer, req_token)
-		yield self.request(self.auth_url_token, headers=req.to_header())
+		yield self.request( self.auth_url_token,
+			headers=self._auth_headers( self.auth_url_token,
+				sign_method=oauth.SignatureMethod_PLAINTEXT() ) )
 		defer.returnValue((self.auth_consumer, self.auth_token))
 
 
+	def info_storage(self): return self()
+	def info_public_files(self): return self('public_files')
+
+
+	@defer.inlineCallbacks
+	def volume_info(self, vol=None, type_filter=None):
+		'Get list of all volumes or info for the one specified.'
+		vols = yield self(join('volumes', vol), raise_for={404: DoesNotExist})
+		if not isinstance(vols, list): vols = [vols]
+		if type_filter is not None:
+			vols = list(vol for vol in vols if vol['type'] == type_filter)
+		if vol is not None: defer.returnValue(vols[0] if vols else None)
+		defer.returnValue(vols)
+
+	def volume_create(self, vol):
+		'Create a new UDF volume to put files/dirs into (or to use with SyncTool).'
+		return self(join('volumes', vol), method='put')
+
+	def volume_delete(self, vol):
+		'Delete named voulme.'
+		return self(join('volumes', vol), method='delete')
+
+
+	def _prepend_volume(func):
+		@defer.inlineCallbacks
+		def _func(self, path, vol=None, **kwz):
+			if not vol:
+				if not self.default_volume:
+					vols = yield self.volume_info(type_filter='udf')
+					if len(vols) == 1: self.default_volume = vols[0]['path']
+					else:
+						raise ValueError(( 'Unable to guess volume to use ({} available: {}),'
+							' should be specified either as a call parameter or default_volume'
+							' class attribute.' ).format(len(vols), ', '.join(op.itemgetter('path'), vols)))
+				vol = self.default_volume
+			defer.returnValue((yield func(self, join(vol, path), **kwz)))
+		return _func
+
+	@_prepend_volume
+	def node_info(self, path='', children=False):
+		if children: children = 'true'
+		return self(path, dict(include_children=children), raise_for={404: DoesNotExist})
+
+	@_prepend_volume
+	def node_delete(self, path=''):
+		return self(path, method='delete')
+
+	@_prepend_volume
+	def node_mkdir(self, path=''):
+		return self(path, data=dict(kind='directory'), encode='json', method='put')
 
 
 if __name__ == '__main__':
@@ -518,6 +635,21 @@ if __name__ == '__main__':
 			open('u1_consumer', 'w').write('{}\n{}\n'.format(*api.auth_consumer))
 			open('u1_token', 'w').write('{}\n{}\n'.format(*api.auth_token))
 			log.info('Auth data acquired: {}'.format(auth))
+
+		log.info('Storage info: {}'.format((yield api.info_storage())))
+		log.info('Public files: {}'.format((yield api.info_public_files())))
+
+		log.info('Volumes: {}'.format((yield api.volume_info())))
+
+		try: vol_info = yield api.volume_info('~/test')
+		except DoesNotExist: vol_info = yield api.volume_create('~/test')
+		log.info('Volume: {}'.format(vol_info))
+
+		try: log.info('dir info: {}'.format((yield api.node_info('/a/b/c', children=True))))
+		except DoesNotExist: log.info('mkdir: {}'.format((yield api.node_mkdir('/a/b/c'))))
+		yield api.node_delete('/a/b/c')
+
+		yield api.volume_delete('~/test')
 
 		log.info('Done')
 
