@@ -598,7 +598,8 @@ class txU1(object):
 	def _prepend_volume(func):
 		@defer.inlineCallbacks
 		def _func(self, path, vol=None, **kwz):
-			if not vol: vol = yield self.get_default_volume()
+			if vol is None and not path.lstrip('/').startswith('~/'):
+				vol = yield self.get_default_volume()
 			defer.returnValue((yield func(self, join(vol, path), **kwz)))
 		return _func
 
