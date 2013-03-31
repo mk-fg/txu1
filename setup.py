@@ -41,7 +41,7 @@ setup(
 		'Topic :: System :: Archiving',
 		'Topic :: System :: Filesystems' ],
 
-	install_requires = ['Twisted >= 12.2.0'],
+	install_requires = ['Twisted >= 12.2.0', 'oauth2'],
 
 	packages = find_packages(),
 	include_package_data = True,

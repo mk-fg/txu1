@@ -6,8 +6,8 @@ from mimetypes import guess_type
 from time import time
 from collections import Mapping, OrderedDict
 from datetime import datetime, timedelta
-import os, sys, io, re, types, weakref, logging
-import urllib, urlparse, json
+import os, sys, io, re, types, logging
+import urllib, urlparse, json, hashlib
 
 from OpenSSL import crypto
 from zope.interface import implements
@@ -354,7 +354,7 @@ class txU1API(object):
 	# api_url_content is a temporary caveat, described in API docs:
 	#  https://one.ubuntu.com/developer/files/store_files/cloud
 	api_url_meta = 'https://one.ubuntu.com/api/file_storage/v1'
-	api_url_content = 'https://files.one.ubuntu.com/api/file_storage/v1'
+	api_url_content = 'https://files.one.ubuntu.com'
 
 	# Auth tunables
 	auth_url_login = 'https://login.ubuntu.com/api/1.0/authentications'
@@ -396,7 +396,6 @@ class txU1API(object):
 		self.request_agent = ContentDecoderAgent(RedirectAgent(Agent(
 			reactor, TLSContextFactory(self.ca_certs_files), pool=pool )), [('gzip', GzipDecoder)])
 		self.oauth = dict() # oauth object cache
-		self.default_volume = None # auto-filled with root_node_path if left unset
 
 
 	@defer.inlineCallbacks
@@ -563,6 +562,7 @@ class txU1API(object):
 
 
 	def info_storage(self): return self()
+
 	def info_public_files(self): return self('public_files')
 
 
@@ -585,20 +585,35 @@ class txU1API(object):
 		return self(join('volumes', vol), method='delete')
 
 
+	default_volume = None
+
+	@defer.inlineCallbacks
+	def get_default_volume(self):
+		if not self.default_volume:
+			vols = yield self.volume_info(type_filter='udf')
+			if len(vols) == 1: self.default_volume = vols[0]['path']
+			else:
+				raise ValueError(( 'Unable to guess volume to use ({} available: {}),'
+					' should be specified either as a call parameter or default_volume'
+					' class attribute.' ).format(len(vols), ', '.join(op.itemgetter('path'), vols)))
+		defer.returnValue(self.default_volume)
+
 	def _prepend_volume(func):
 		@defer.inlineCallbacks
 		def _func(self, path, vol=None, **kwz):
-			if not vol:
-				if not self.default_volume:
-					vols = yield self.volume_info(type_filter='udf')
-					if len(vols) == 1: self.default_volume = vols[0]['path']
-					else:
-						raise ValueError(( 'Unable to guess volume to use ({} available: {}),'
-							' should be specified either as a call parameter or default_volume'
-							' class attribute.' ).format(len(vols), ', '.join(op.itemgetter('path'), vols)))
-				vol = self.default_volume
+			if not vol: vol = yield self.get_default_volume()
 			defer.returnValue((yield func(self, join(vol, path), **kwz)))
 		return _func
+
+	def _content_path(func):
+		@defer.inlineCallbacks
+		def _func(self, path, vol=None, content_path=None, **kwz):
+			if not content_path:
+				if not vol: vol = yield self.get_default_volume()
+				content_path = (yield self(join(vol, path), raise_for={404: DoesNotExist}))['content_path']
+			defer.returnValue((yield func(self, content_path, **kwz)))
+		return _func
+
 
 	@_prepend_volume
 	def node_info(self, path='', children=False):
@@ -612,6 +627,50 @@ class txU1API(object):
 	@_prepend_volume
 	def node_mkdir(self, path=''):
 		return self(path, data=dict(kind='directory'), encode='json', method='put')
+
+	@_prepend_volume
+	def node_touch(self, path=''):
+		return self(path, data=dict(kind='file'), encode='json', method='put')
+
+	@_prepend_volume
+	def node_rename(self, path, new_path):
+		return self(path, data=dict(path=new_path), encode='json', method='put')
+
+	@_prepend_volume
+	def node_set_public(self, path, value):
+		return self(path, data=dict(is_public=value), encode='json', method='put')
+
+
+	@_content_path
+	def file_get(self, content_path):
+		return self(content_path, content=True, decode=None)
+
+	@_content_path
+	def file_put_into(self, content_path, name, data):
+		content_path = join(content_path, name)
+		return self(content_path, content=True, method='put', data=data)
+
+	@defer.inlineCallbacks
+	def file_put(self, path, vol=None, content_path=None, data=None):
+		assert data is not None
+		if not content_path:
+			if not vol: vol = yield self.get_default_volume()
+			path, name = path.rsplit('/', 1)
+			content_path = (yield self(join(vol, path), raise_for={404: DoesNotExist}))['content_path']
+			content_path = join(content_path, name)
+		defer.returnValue((yield self(content_path, content=True, method='put', data=data)))
+
+	@_prepend_volume
+	def file_put_magic(self, path, data):
+		if isinstance(data, types.StringTypes): data = io.BytesIO(data)
+		sha1, sha1_magic = hashlib.sha1(), hashlib.sha1('Ubuntu One')
+		for chunk in iter(ft.partial(data.read, 2**20), ''):
+			sha1.update(chunk), sha1_magic.update(chunk)
+		return self(path, data=dict( kind='file',
+				hash='sha1:{}'.format(sha1.hexdigest()),
+				magic_hash='magic_hash:{}'.format(sha1_magic.hexdigest()) ),
+			encode='json', method='put', raise_for={400: DoesNotExist})
+
 
 
 if __name__ == '__main__':
@@ -644,11 +703,22 @@ if __name__ == '__main__':
 		try: vol_info = yield api.volume_info('~/test')
 		except DoesNotExist: vol_info = yield api.volume_create('~/test')
 		log.info('Volume: {}'.format(vol_info))
+		api.default_volume = '~/test'
 
 		try: log.info('dir info: {}'.format((yield api.node_info('/a/b/c', children=True))))
 		except DoesNotExist: log.info('mkdir: {}'.format((yield api.node_mkdir('/a/b/c'))))
-		yield api.node_delete('/a/b/c')
 
+		contents = 'YAY'
+		log.info('put: {}'.format(
+			(yield api.file_put_into('/a/b/c', name='test_file', data=contents)) ))
+		log.info('put_magic: {}'.format(
+			(yield api.file_put_magic('/a/b/c/test_file2', data=contents)) ))
+
+		log.info('get: {}'.format((yield api.file_get('/a/b/c/test_file'))))
+
+		yield api.node_delete('/a/b/c/test_file2')
+		yield api.node_delete('/a/b/c/test_file')
+		yield api.node_delete('/a/b/c')
 		yield api.volume_delete('~/test')
 
 		log.info('Done')
