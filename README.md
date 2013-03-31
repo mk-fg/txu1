@@ -7,7 +7,7 @@ Cloud REST API v1](https://one.ubuntu.com/developer/files/store_files/cloud).
  * [API docs](https://one.ubuntu.com/developer/files/store_files/cloud)
  * [API Auth docs](https://one.ubuntu.com/developer/account_admin/auth/index)
 
-Implemented from scratch on top of [Twisted](http://twistedmatrix.com/) and
+Implemented from scratch on top of Twisted and
 [oauth2](https://pypi.python.org/pypi/oauth2/) (name might be confusing - it's
 actually OAuth 1.0 helper), does not require any ubuntu-specific libs, daemons
 or modules.
