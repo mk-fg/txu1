@@ -1,13 +1,10 @@
 #-*- coding: utf-8 -*-
 
 import itertools as it, operator as op, functools as ft
-from urllib import urlencode
 from mimetypes import guess_type
-from time import time
 from collections import Mapping, OrderedDict
-from datetime import datetime, timedelta
 import os, sys, io, re, types, logging
-import urllib, urlparse, json, hashlib
+import urllib, hashlib
 
 from OpenSSL import crypto
 from zope.interface import implements
@@ -429,7 +426,7 @@ class txU1API(object):
 					if isinstance(data, types.StringTypes): data = io.BytesIO(data)
 				elif encode == 'form':
 					req_headers['Content-Type'] = 'application/x-www-form-urlencoded'
-					data = io.BytesIO(urlencode(data))
+					data = io.BytesIO(urllib.urlencode(data))
 				elif encode == 'json':
 					req_headers['Content-Type'] = 'application/json'
 					data = io.BytesIO(json.dumps(data))
