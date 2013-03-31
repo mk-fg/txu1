@@ -345,7 +345,7 @@ def join(*path_nodes):
 	return path
 
 
-class txU1API(object):
+class txU1(object):
 	'U1 API client.'
 
 	# api_url_content is a temporary caveat, described in API docs:
@@ -674,8 +674,8 @@ if __name__ == '__main__':
 	logging.basicConfig(level=logging.DEBUG)
 	twisted_log.PythonLoggingObserver().start()
 
-	req_pool_optz = txU1API.request_pool_options.copy()
-	api = txU1API(debug_requests=True, request_pool_options=req_pool_optz)
+	req_pool_optz = txU1.request_pool_options.copy()
+	api = txU1(debug_requests=True, request_pool_options=req_pool_optz)
 
 	@defer.inlineCallbacks
 	def test():

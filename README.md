@@ -4,8 +4,8 @@ txu1
 Twisted-based async interface for [Ubuntu One](https://one.ubuntu.com) [Files
 Cloud REST API v1](https://one.ubuntu.com/developer/files/store_files/cloud).
 
- * [API docs](https://one.ubuntu.com/developer/files/store_files/cloud)
- * [API Auth docs](https://one.ubuntu.com/developer/account_admin/auth/index)
+ * [U1 API docs](https://one.ubuntu.com/developer/files/store_files/cloud)
+ * [U1 API Auth docs](https://one.ubuntu.com/developer/account_admin/auth/index)
 
 Implemented from scratch on top of Twisted and
 [oauth2](https://pypi.python.org/pypi/oauth2/) (name might be confusing - it's
@@ -27,11 +27,11 @@ More comprehensive docs are always welcome!
 
 	from twisted.internet import defer, reactor
 	from twisted.python import log
-	from txu1 import txU1API, DoesNotExist
+	from txu1 import txU1, DoesNotExist
 
 	@defer.inlineCallbacks
 	def do_stuff():
-		api = txU1API(debug_requests=True)
+		api = txU1(debug_requests=True)
 
 		try:
 			api.auth_consumer, api.auth_token =\
