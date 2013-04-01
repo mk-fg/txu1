@@ -677,6 +677,24 @@ class txU1(object):
 			encode='json', method='put', raise_for={400: DoesNotExist})
 
 
+class txU1Persistent(txU1):
+
+	#: Path to configuration file to use in from_conf() by default.
+	conf_path_default = b'~/.u1rc'
+
+	@classmethod
+	def from_conf(cls, path=None, **overrides):
+		import yaml
+		if path is None:
+			path = cls.conf_path_default
+			log.debug('Using default state-file path: {}'.format(path))
+		path = os.path.expanduser(path)
+		with open(path) as src:
+			conf = yaml.load(src.read())
+		conf.update(overrides)
+		return cls(**conf)
+
+
 
 if __name__ == '__main__':
 	logging.basicConfig(level=logging.DEBUG)
