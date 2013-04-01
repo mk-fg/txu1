@@ -562,6 +562,12 @@ class txU1(object):
 
 	def info_public_files(self): return self('public_files')
 
+	@defer.inlineCallbacks
+	def get_quota(self):
+		'Return tuple of (bytes_available, bytes_quota).'
+		du, ds = op.itemgetter('used_bytes', 'max_bytes')((yield self()))
+		defer.returnValue((ds - du, ds))
+
 
 	@defer.inlineCallbacks
 	def volume_info(self, vol=None, type_filter=None):
@@ -624,6 +630,7 @@ class txU1(object):
 
 	@_prepend_volume
 	def node_mkdir(self, path=''):
+		'Does not raise any errors if dir already exists.'
 		return self(path, data=dict(kind='directory'), encode='json', method='put')
 
 	@_prepend_volume
