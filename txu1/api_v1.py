@@ -530,6 +530,7 @@ class txU1(object):
 				query.viewitems() if v is not None )
 		api_url = self._api_url(url, query, content=content)
 		request_kwz.setdefault('decode', 'json')
+		request_kwz.setdefault('raise_for', dict()).setdefault(404, DoesNotExist)
 
 		def _auth_headers(url, method, body, mime, base):
 			url = url.split(' ', 1)[0] # XXX: no idea why API does that, bug?
@@ -572,7 +573,7 @@ class txU1(object):
 	@defer.inlineCallbacks
 	def volume_info(self, vol=None, type_filter=None):
 		'Get list of all volumes or info for the one specified.'
-		vols = yield self(join('volumes', vol), raise_for={404: DoesNotExist})
+		vols = yield self(join('volumes', vol))
 		if not isinstance(vols, list): vols = [vols]
 		if type_filter is not None:
 			vols = list(vol for vol in vols if vol['type'] == type_filter)
@@ -603,6 +604,7 @@ class txU1(object):
 
 	def _prepend_volume(func):
 		@defer.inlineCallbacks
+		@ft.wraps(func)
 		def _func(self, path, vol=None, **kwz):
 			if vol is None and not path.lstrip('/').startswith('~/'):
 				vol = yield self.get_default_volume()
@@ -611,7 +613,8 @@ class txU1(object):
 
 	def _content_path(func):
 		@defer.inlineCallbacks
-		def _func(self, path, vol=None, content_path=None, **kwz):
+		@ft.wraps(func)
+		def _func(self, path=None, vol=None, content_path=None, **kwz):
 			if not content_path:
 				if not vol: vol = yield self.get_default_volume()
 				content_path = (yield self(join(vol, path), raise_for={404: DoesNotExist}))['content_path']
