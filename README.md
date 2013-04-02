@@ -17,16 +17,16 @@ or modules.
 Usage Example
 ----------------------------------------
 
-Note that email/password credentials are only needed to get the OAuth 1.0 token
-(which can be revoked through [ubuntu single sign on
+Note that email/password credentials are only needed to get the OAuth 1.0
+consumer/token (which can be revoked through [ubuntu single sign on
 interface](https://login.ubuntu.com/+applications)) once, see
 [docs](https://one.ubuntu.com/developer/account_admin/auth/otherplatforms) for
 more details.
 
-More comprehensive docs are always welcome!
+Included "u1-cli" script can also be used to generate these OAuth credentials
+for the apps.
 
 	from twisted.internet import defer, reactor
-	from twisted.python import log
 	from txu1 import txU1, DoesNotExist
 
 	@defer.inlineCallbacks
@@ -37,7 +37,7 @@ More comprehensive docs are always welcome!
 			api.auth_consumer, api.auth_token =\
 				(open(n).read().splitlines() for n in ['u1_consumer', 'u1_token'])
 		except (OSError, IOError):
-			log.info('Getting new OAuth credentials')
+			print 'Getting new OAuth credentials'
 
 			# Query credentials from terminal
 			email = raw_input('U1 Email: ').strip()
@@ -47,42 +47,45 @@ More comprehensive docs are always welcome!
 			auth = yield api.auth_create_token(email, password)
 			open('u1_consumer', 'w').write('{}\n{}\n'.format(*api.auth_consumer))
 			open('u1_token', 'w').write('{}\n{}\n'.format(*api.auth_token))
-			log.info('Auth data acquired: {}'.format(auth))
+			print 'Auth data acquired: {}'.format(auth)
 
-		log.info('Storage info: {}'.format((yield api.info_storage())))
-		log.info('Public files: {}'.format((yield api.info_public_files())))
+		print 'Storage info: {}'.format((yield api.info_storage()))
+		print 'Public files: {}'.format((yield api.info_public_files()))
 
 		vol_list = yield api.volume_info(type_filter='udf')
 		vol_count = len(vol_list)
-		log.info('UDF volumes: {}'.format(vol_list))
+		print 'UDF volumes: {}'.format(vol_list)
 
 		try: vol_info = yield api.volume_info('~/test')
 		except DoesNotExist:
 			vol_info = yield api.volume_create('~/test')
 			vol_count += 1
-		log.info('Using volume: {}'.format(vol_info))
+		print 'Using volume: {}'.format(vol_info)
 		if vols_count > 1: api.default_volume = '~/test'
 
-		try: log.info('dir info: {}'.format((yield api.node_info('/a/b/c', children=True))))
-		except DoesNotExist: log.info('mkdir: {}'.format((yield api.node_mkdir('/a/b/c'))))
+		try: print 'dir info: {}'.format((yield api.node_info('/a/b/c', children=True)))
+		except DoesNotExist: print 'mkdir: {}'.format((yield api.node_mkdir('/a/b/c')))
 
 		contents = 'somecontents'
-		log.info('put: {}'.format(
-			(yield api.file_put_into('/a/b/c', name='test_file', data=contents)) ))
-		log.info('put_magic: {}'.format(
-			(yield api.file_put_magic('/a/b/c/test_file2', data=contents)) ))
+		print 'put: {}'.format(
+			(yield api.file_put_into('/a/b/c', name='test_file', data=contents)) )
+		print 'put_magic: {}'.format(
+			(yield api.file_put_magic('/a/b/c/test_file2', data=contents)) )
 
-		log.info('get: {}'.format((yield api.file_get('/a/b/c/test_file'))))
+		print 'get: {}'.format((yield api.file_get('/a/b/c/test_file')))
 
+		print "Hey! I'm running some DELETE operations, don't mind me..."
 		yield api.node_delete('/a/b/c/test_file2')
 		yield api.node_delete('/a/b/c/test_file')
 		yield api.node_delete('/a/b/c')
 		yield api.volume_delete('~/test')
 
-		log.info('Done')
+		print 'Done'
 
 	do_stuff().addBoth(lambda ignored: reactor.stop())
 	reactor.run()
+
+More comprehensive docs are always welcome!
 
 
 

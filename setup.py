@@ -46,4 +46,6 @@ setup(
 	packages = find_packages(),
 	include_package_data = True,
 	package_data = {'': ['README.txt']},
-	exclude_package_data = {'': ['README.*']} )
+	exclude_package_data = {'': ['README.*']},
+
+	entry_points=dict(console_scripts=['u1-cli = txu1.cli_tool:main']) )

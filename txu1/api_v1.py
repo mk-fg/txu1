@@ -356,7 +356,7 @@ class txU1(object):
 	# Auth tunables
 	auth_url_login = 'https://login.ubuntu.com/api/1.0/authentications'
 	auth_url_token = 'https://one.ubuntu.com/oauth/sso-finished-so-get-tokens/'
-	auth_token_name = 'Ubuntu One @ {hostname} [txu1]' # hostname=uname()
+	auth_token_name_tpl = 'Ubuntu One @ {hostname} [txu1]' # hostname=uname()
 
 	# Auth credentials
 	# Must be either set or acquired (generally once) via auth_create_token method
@@ -542,11 +542,13 @@ class txU1(object):
 
 
 	@defer.inlineCallbacks
-	def auth_create_token(self, email, password):
+	def auth_create_token(self, email, password, token_name=None):
+		if token_name is None:
+			token_name = self.auth_token_name_tpl.format(hostname=os.uname()[1])
 		# Using email/password, get OAuth consumer/token
 		res = yield self.request(
-			'{}?{}'.format(self.auth_url_login, urllib.urlencode({ 'ws.op': 'authenticate',
-				'token_name': self.auth_token_name.format(hostname=os.uname()[1]) })),
+			'{}?{}'.format(self.auth_url_login, urllib.urlencode(
+				{'ws.op': 'authenticate', 'token_name': token_name})),
 			headers={'Authorization': 'Basic {}'.format(
 				'{}:{}'.format(email, password).encode('base64').strip() )},
 			decode='json', raise_for={401: AuthenticationError} )
