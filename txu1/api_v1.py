@@ -72,7 +72,8 @@ class ProtocolError(U1InteractionError):
 		super(ProtocolError, self).__init__(code, msg)
 		self.code = code
 
-class DoesNotExist(U1InteractionError): pass
+class DoesNotExists(U1InteractionError): pass
+DoesNotExist = DoesNotExists # deprecated alias (my english fail)
 
 class AuthenticationError(U1InteractionError): pass
 
@@ -530,7 +531,7 @@ class txU1(object):
 				query.viewitems() if v is not None )
 		api_url = self._api_url(url, query, content=content)
 		request_kwz.setdefault('decode', 'json')
-		request_kwz.setdefault('raise_for', dict()).setdefault(404, DoesNotExist)
+		request_kwz.setdefault('raise_for', dict()).setdefault(404, DoesNotExists)
 
 		def _auth_headers(url, method, body, mime, base):
 			url = url.split(' ', 1)[0] # XXX: no idea why API does that, bug?
@@ -619,7 +620,8 @@ class txU1(object):
 		def _func(self, path=None, vol=None, content_path=None, **kwz):
 			if not content_path:
 				if not vol: vol = yield self.get_default_volume()
-				content_path = (yield self(join(vol, path), raise_for={404: DoesNotExist}))['content_path']
+				content_path = (yield self( join(vol, path),
+					raise_for={404: DoesNotExists} ))['content_path']
 			defer.returnValue((yield func(self, content_path, **kwz)))
 		return _func
 
@@ -627,7 +629,7 @@ class txU1(object):
 	@_prepend_volume
 	def node_info(self, path='', children=False):
 		if children: children = 'true'
-		return self(path, dict(include_children=children), raise_for={404: DoesNotExist})
+		return self(path, dict(include_children=children), raise_for={404: DoesNotExists})
 
 	@_prepend_volume
 	def node_delete(self, path=''):
@@ -666,7 +668,7 @@ class txU1(object):
 		if not content_path:
 			if not vol: vol = yield self.get_default_volume()
 			path, name = path.rsplit('/', 1)
-			content_path = (yield self(join(vol, path), raise_for={404: DoesNotExist}))['content_path']
+			content_path = (yield self(join(vol, path), raise_for={404: DoesNotExists}))['content_path']
 			content_path = join(content_path, name)
 		defer.returnValue((yield self(content_path, content=True, method='put', data=data)))
 
@@ -679,7 +681,7 @@ class txU1(object):
 		return self(path, data=dict( kind='file',
 				hash='sha1:{}'.format(sha1.hexdigest()),
 				magic_hash='magic_hash:{}'.format(sha1_magic.hexdigest()) ),
-			encode='json', method='put', raise_for={400: DoesNotExist})
+			encode='json', method='put', raise_for={400: DoesNotExists})
 
 
 class txU1Persistent(txU1):
@@ -729,12 +731,12 @@ if __name__ == '__main__':
 		log.info('Volumes: {}'.format((yield api.volume_info())))
 
 		try: vol_info = yield api.volume_info('~/test')
-		except DoesNotExist: vol_info = yield api.volume_create('~/test')
+		except DoesNotExists: vol_info = yield api.volume_create('~/test')
 		log.info('Volume: {}'.format(vol_info))
 		api.default_volume = '~/test'
 
 		try: log.info('dir info: {}'.format((yield api.node_info('/a/b/c', children=True))))
-		except DoesNotExist: log.info('mkdir: {}'.format((yield api.node_mkdir('/a/b/c'))))
+		except DoesNotExists: log.info('mkdir: {}'.format((yield api.node_mkdir('/a/b/c'))))
 
 		contents = 'YAY'
 		log.info('put: {}'.format(
