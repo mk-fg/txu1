@@ -628,7 +628,7 @@ class txU1(object):
 
 	@_prepend_volume
 	def node_info(self, path='', children=False):
-		if children: children = 'true'
+		children = 'true' if children else 'false'
 		return self(path, dict(include_children=children), raise_for={404: DoesNotExists})
 
 	@_prepend_volume
@@ -744,6 +744,7 @@ if __name__ == '__main__':
 		log.info('put_magic: {}'.format(
 			(yield api.file_put_magic('/a/b/c/test_file2', data=contents)) ))
 
+		log.info('file info: {}'.format((yield api.node_info('/a/b/c/test_file'))))
 		log.info('get: {}'.format((yield api.file_get('/a/b/c/test_file'))))
 
 		yield api.node_delete('/a/b/c/test_file2')
