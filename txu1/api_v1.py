@@ -72,7 +72,7 @@ class ProtocolError(U1InteractionError):
 		super(ProtocolError, self).__init__(code, msg)
 		self.code = code
 
-class DoesNotExists(U1InteractionError): pass
+class DoesNotExists(ProtocolError): pass
 DoesNotExist = DoesNotExists # deprecated alias (my english fail)
 
 class AuthenticationError(U1InteractionError): pass
