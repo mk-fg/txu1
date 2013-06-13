@@ -108,7 +108,9 @@ class DataReceiver(protocol.Protocol):
 		if self.data is not None: self.data.append(chunk)
 
 	def connectionLost(self, reason):
-		if self.timer: self.timer.state_next()
+		if self.timer:
+			try: self.timer.state_next()
+			except self.timer.TooLate: pass # irrelevant at this point
 		if not isinstance(reason.value, ResponseDone)\
 				and not (self.allow_loss and isinstance(reason.value, http.PotentialDataLoss)):
 			self.done.callback(reason)
